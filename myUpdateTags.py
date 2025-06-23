@@ -93,10 +93,17 @@ def fetch_stock_data(ticker):
 def update_database(ticker, sector, industry, beta):
     """Update the database with the fetched values."""
     db = alphaDb()
-    db.queryDbSql(f"""
-        UPDATE {TABLE_NAME} 
-        SET Sector = '{sector}', Industry = '{industry}', Beta ={beta}  
-        WHERE Ticker = '{ticker}'""", True)
+    try:
+        if beta is None or beta == 'None':
+            beta = 'NULL'
+        sql = f"""
+            UPDATE {TABLE_NAME} 
+            SET Sector = '{sector}', Industry = '{industry}', Beta ={beta}  
+        WHERE Ticker = '{ticker}'"""
+
+        db.queryDbSql(sql, True)
+    except Exception as e:
+        print(f"Error updating database for {ticker}: {e}\n{sql}")
 
 def main():
     """Main function to process all tickers."""
