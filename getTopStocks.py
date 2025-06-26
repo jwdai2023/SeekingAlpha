@@ -18,7 +18,7 @@ def get_last_trading_day(today):
 
 newDate = datetime.now()#  None # date(2024,11,22)
 oldDate = get_last_trading_day(newDate )
-oldDate =  date(2025,5,30)
+oldDate =  date(2025,6,16)
 quantRatingHi = 4.95
 quantRatingLo = 4.0
 sellerRatingHi = 4.0
