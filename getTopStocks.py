@@ -18,7 +18,7 @@ def get_last_trading_day(today):
 
 newDate = datetime.now()#  None # date(2024,11,22)
 oldDate = get_last_trading_day(newDate )
-oldDate =  date(2025,6,16)
+#oldDate =  date(2025,7,14)
 quantRatingHi = 4.95
 quantRatingLo = 4.0
 sellerRatingHi = 4.0
@@ -32,7 +32,7 @@ quickScan=True
 
 
 ## this is the second set that generate high return:
-quantRatingHi2 = 4.92
+quantRatingHi2 = 4.90
 momentumGrade = 1
 
 ## this is the Third set that generate high return:
@@ -119,7 +119,7 @@ def fetchAlphaStockRatingsHistAll(day=None, doMakeUp=False):
     dates={}
     rtn = db.queryDbSql(f"SELECT Ticker, Date, dpsRevisionsGrade from Ratings where Date>='{fromDateStr}' and Ticker='{ticker}' ")#   and quantRating is NULL ")
     for en in rtn:
-      dates[en.Date]=1    
+      dates[en.Date.strftime("%Y-%m-%d")]=1    
     for page in range(1,endPage):
       ts =  datetime.now()
       print (f"{ts} Searching {cnt+startRank} {ticker} of page {page}...")
@@ -277,13 +277,16 @@ def getAndSaveTodayRatings(quantLo=2.5):
   api = FetchingAlphaAPI()
   tickers = api.getScreenedStocks(
     {
-      "quant_rating": {"gte": quantLo, "lte": 5  }
+      "quant_rating": {"in": ["strong_buy","buy","hold"]  },
     }
   )
-  db = alphaDb()
+
   ratings = api.getTodayRatings(tickers)
+  saveTodayRatings(tickers, ratings)
+
+def saveTodayRatings(tickers, ratings):
   allTickers = {}
-  
+  db = alphaDb()
   res = db.queryDbSql('SELECT Ticker from Tickers')
   for row in res:
     allTickers[row.Ticker.rstrip().upper()] = 1
@@ -388,25 +391,20 @@ def getRatingChanges(newDate=None, oldDate=None, quickScan=True, enforce = False
 
   #api = RapidAPI() 
   alphaApi= FetchingAlphaAPI( )
-  rtn = alphaApi.getScreenedStocks(
-    {
-      "quant_rating": {"gte": quantRatingLo, "lte": 5  },
-      "sell_side_rating": { "gte": sellerRatingLo,    "lte": 5    },
-      "close": { "gte": 2    },
-    }
-  )    
-  for ticker in rtn:
-    tickersNew[ticker] = Rating(quantRatingLo, sellerRatingLo)
-
+ 
   tickers = alphaApi.getScreenedStocks(
     {
-      "quant_rating": {"gte": quantRatingHi2, "lte": 5  },
-      "sell_side_rating": { "gte": sellerRatingHi,    "lte": 5    },
-      "close": { "gte": 2    },
+      "quant_rating": {"in": ["strong_buy"]},
+      "sell_side_rating": { "in": ["strong_buy", "buy"]     },
+      "close": { "gte": 4    },
+      "authors_rating": { "in": ["strong_buy", "buy","hold"]   },
+      "marketcap_display":{ "gte": 400000000}
     }
   )    
 
   rtn = alphaApi.getTodayRatings(tickers)
+  saveTodayRatings(tickers, rtn)
+
   for t in rtn:
     rating=rtn[t]
     tickersNew[t]=Rating(rating['quantRating'], rating['sellSideRating'], rating['authorsRating'], rating['momentumGrade'])
@@ -555,7 +553,7 @@ elif ( choice == '5'):
 
   fetchAlphaStockRatingsHistAll()
   #fetchDailyPriceFromPolygen()
-  fetchDailyPriceFromTradier
+  fetchDailyPriceFromTradier()
   pass
 
 elif ( choice == '6'):
