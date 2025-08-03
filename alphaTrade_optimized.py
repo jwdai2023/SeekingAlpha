@@ -1,6 +1,5 @@
 import pyodbc
 from datetime import datetime
-
 import dateutil.parser as parser
 import pytz
 import requests
@@ -10,8 +9,9 @@ import math
 import time
 import random
 from alphaCommon import alphaDb, FetchPolygenAPI
-
 from datetime import date, timedelta
+from collections import defaultdict
+import pandas as pd
 
 
 class TickerState:
@@ -47,9 +47,7 @@ class Holding:
 
 ################################
 
-
-
-g_startDate = date(2025,5,30)
+g_startDate = date(2024,1,1)
 g_endDate = date(2025, 7, 25)
 g_startCash = 350000
 g_minCash = 20000
@@ -73,12 +71,10 @@ class Strategy:
     SCALEOUT = 6
 
   def __init__(self):
-
     self.startCash= 350000
     self.minCash= 20000
     self.tradeSize= 6000
     self.maxPostion=2000
-
 
     ## filters
     self.sellSideRating= 4.0
@@ -119,9 +115,8 @@ class Strategy:
     return self.tradeSize
   
   def qualified(self, tickstate:TickerState)->TIER:
-    try:
-      if ( tickstate.quantRating == None or tickstate.sellSideRating == None ) :# or tickstate.authorsRating == None ):
-        return Strategy.TIER.TIER_3
+    if ( tickstate.quantRating == None or tickstate.sellSideRating == None ) :# or tickstate.authorsRating == None ):
+      return Strategy.TIER.TIER_3
     elif (  tickstate.authorsRating != None and  tickstate.momentumGrade != None and 
           tickstate.epsRevisionsGrade != None and tickstate.valueGrade != None and 
           tickstate.profitabilityGrade != None and 
@@ -143,21 +138,15 @@ class Strategy:
       return Strategy.TIER.TIER_3
     else:
       return Strategy.TIER.TIER_2
-    except Exception as e:
-        print(f"Error in strategy.qualified for ticker {tickstate.ticker if tickstate else 'None'}: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return Strategy.TIER.TIER_3
   
   def decision(self, tickstate:TickerState, tier:TIER )->ACTION:
     action = Strategy.ACTION.NONE
-    try:
-      if ( tickstate is None or tickstate.numShares == 0 ): 
-          ## I do not have a postion on this ticket yet
-        if ( tier == Strategy.TIER.TIER_1 ):
-          action = Strategy.ACTION.BUY
-        else:
-          action = Strategy.ACTION.NONE
+    if ( tickstate is None or tickstate.numShares == 0 ): 
+        ## I do not have a postion on this ticket yet
+      if ( tier == Strategy.TIER.TIER_1 ):
+        action = Strategy.ACTION.BUY
+      else:
+        action = Strategy.ACTION.NONE
     ### I have a position ::::::::::::
 
     elif ( tier == Strategy.TIER.TIER_3):
@@ -216,20 +205,15 @@ class Strategy:
         action  = Strategy.ACTION.KEEP   # SCALEOUT   get rid off scaleout . It will reduce return
       else:
         action = Strategy.ACTION.KEEP
-     elif ( tier == Strategy.TIER.TIER_1  or tier== Strategy.TIER.TIER_2 ):
-       if ( len(tickstate.trades)<=self.addPosition and 
-          ( tickstate.price > tickstate.entryPrice*1.20 and tickstate.price < tickstate.entryPrice*1.5) ):
-            action = Strategy.ACTION.ADD
-       else:
-         action  = Strategy.ACTION.KEEP
-     else:
-         action  = Strategy.ACTION.KEEP
-     except Exception as e:
-         print(f"Error in strategy.decision for ticker {tickstate.ticker if tickstate else 'None'}: {str(e)}")
-         import traceback
-         traceback.print_exc()
-         action = Strategy.ACTION.NONE
-     return action
+    elif ( tier == Strategy.TIER.TIER_1  or tier== Strategy.TIER.TIER_2 ):
+      if ( len(tickstate.trades)<=self.addPosition and 
+         ( tickstate.price > tickstate.entryPrice*1.20 and tickstate.price < tickstate.entryPrice*1.5) ):
+          action = Strategy.ACTION.ADD
+      else:
+        action  = Strategy.ACTION.KEEP
+    else:
+        action  = Strategy.ACTION.KEEP
+    return action
 
 class topMomentumStrategy(Strategy):
   def __init__(self):
@@ -254,7 +238,7 @@ class topMomentumStrategy2(Strategy):
       tier = Strategy.TIER.TIER_1
     else:
       tier = super().qualified(tickstate)
-    #print (tier, tickstate.quantRating, tickstate.authorsRating, tickstate.sellSideRating, tickstate.momentumGrade)
+    #print (tier, tickerState.quantRating, tickerState.authorsRating, tickerState.sellSideRating, tickerState.momentumGrade)
     return tier
 
 
@@ -330,7 +314,7 @@ class alphaPicksStrategy(Strategy):
     self.actions=actions
 
   def getTradeSize(self, ticker:str, date:str):
-    if ( ticker == 'SMCI'): ## SMCI was sold 50% and 50% in two batches
+    if ( t == 'SMCI'): ## SMCI was sold 50% and 50% in two batches
       return self.tradeSize/2
     else:
       return self.tradeSize
@@ -363,9 +347,6 @@ class alphaPicksStrategy(Strategy):
     else:
       action  = Strategy.ACTION.HOLD
     return action
-
-
-
 
 
 class mixedStrategy(Strategy):
@@ -431,7 +412,6 @@ class mixedStrategy(Strategy):
     else:
         action  = Strategy.ACTION.KEEP
 
-
     return action
 
 
@@ -459,281 +439,285 @@ class Status :
     self.tickProfit={}
 
 
-stat = Status(g_startCash)
-
-db = alphaDb()
-#res = db.queryDbSql('SELECT Distinct Date From Ratings Order by Date desc')
-#for row in res:
-#  print (row.Date)
-
 def daterange(start_date: date, end_date: date):
     days = int((end_date - start_date).days)
     for n in range(days):
         yield start_date + timedelta(n)
 
-#sql = f"SELECT * From DailyPrice join Ratings on DailyPrice.Ticker=Ratings.Ticker and DailyPrice.Date=Ratings.Date Where Ratings.Date='{dateName}'"
-  #print (sql)
-sql = (f"SELECT * From DailyPrice join Ratings on DailyPrice.Ticker=Ratings.Ticker and DailyPrice.Date=Ratings.Date "
-        f" where Ratings.Date  >= '{g_startDate.strftime("%Y-%m-%d")}'  and Ratings.Date  <= '{g_endDate.strftime("%Y-%m-%d")}' " 
-         #    " AND Ratings.Ticker='NVDA' "
-       )
 
-res = db.queryDbSql(sql)
-rows = []
-for row in res:
-  rows.append(row)
-
-fOut = open(r"results1.txt", "w+")
-
-
-
-holdings={} ##   holdings for tickers at the current date
-stopMsg = ""
-shortMsg = ""
-
-#strategy = mixedStrategy()
-
-#strategy = alphaPicksStrategy()
-strategy = topMomentumStrategy()
-#strategy = specialStrategy()
-#strategy = topMomentumStrategy2()
-#strategy = highGrowthStrategy()
-for single_date in daterange(g_startDate, g_endDate):
-# interate each date
-
-  if (single_date.weekday() >= 5):
-    continue
-
-  todayRows = []
-  dateName = single_date.strftime("%Y-%m-%d")
-  for row in rows: 
-    if ( row.Date.strftime("%Y-%m-%d") == dateName):
-      todayRows.append(row)
-  if ( len(todayRows) == 0):
-    continue ## there is no prcing info for this date. No trading....
-
-  
-  #print (dateName)
-
-  nAdd=0
-  nSold=0
-  currMarket={}
-  action = {}
-
-
-  ## for each day, iterate each ticker to decide the action for this ticker
-  for row in todayRows: 
-    price =  row.O
-    #print (row)
-    tickerState:TickerState = None
-    ticker = row.Ticker.rstrip().upper()
-    if (  ticker in holdings):
-      tickerState = holdings[ticker]
-
-    else:
-      tickerState = TickerState()
-      tickerState.ticker = ticker
-
-    tickerState.price = price
-    tickerState.currentDate = single_date
-    tickerState.quantRating = row.quantRating
-    tickerState.sellSideRating = row.sellSideRating
-    tickerState.authorsRating = row.authorsRating
-    tickerState.growthGrade = row.growthGrade
-    tickerState.momentumGrade = row.momentumGrade
-    tickerState.epsRevisionsGrade = row.epsRevisionsGrade
-    tickerState.profitabilityGrade = row.profitabilityGrade
-    tickerState.valueGrade = row.valueGrade
-    currMarket[ticker] = tickerState
-    tier:Strategy.TIER = strategy.qualified(tickerState)
-    action[ticker] = strategy.decision(tickerState, tier)
-
-
-  newHoldings={}
-
-  ## check the previous holding to see if any needs to be sold!
-  posCount = len(holdings)
-  for t in holdings:
-    if ( not t in currMarket): ## for some reason, there is no market price today
-      ## keep the existing postion AS IS
-      action[t] = Strategy.ACTION.KEEP
-      newHoldings[t] = holdings[t]
-      continue
-    tickerState =   currMarket[t]
-    price = tickerState.price
-    rating = tickerState.quantRating
-    en:TickerState = holdings[t]
-
-    if ( action[t] == Strategy.ACTION.SELL):
-      # print ("xxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-      shares = en.numShares
-      entryPrice = en.entryPrice
-
-      profit = (price-entryPrice)*shares
-      profitPct = (price-entryPrice)/entryPrice*100
-      print (f" --SOLD {t} {shares} shares at {price:.2f} with pofit {profit:.2f} {profitPct:.02f}% (rating={rating:.3f}")
-      delta = single_date - en.entryDate
-      if ( profit >=0):
-        stat.wins += 1
-        stat.winAmt += profit
-        stat.winHoldingDays += delta.days
-      else:
-        stat.loses += 1
-        stat.lossAmt += profit
-        stat.lossHoldingDays += delta.days
-
-      
-      stat.holdingDays += delta.days
-      if ( t in stat.tickProfit):
-        stat.tickProfit[t] += profit
-      else:
-        stat.tickProfit[t] = profit
-
-      stat.profit += profit 
-      stat.sold += 1
-      posCount -=1
-      stat.cash += shares * price
-    elif ( action[t] == Strategy.ACTION.SCALEOUT ):
-      shares = int(en.numShares/5)
-      entryPrice = en.entryPrice
-
-      profit = (price-entryPrice)*shares
-      profitPct = (price-entryPrice)/entryPrice*100
-      print (f" --SCALE OUT {t} {shares} shares at {price:.2f} with pofit {profit:.2f} {profitPct:.02f}% (rating={rating:.3f}")
-
-      stat.profit += profit 
-      stat.cash += shares * price
-      en.numShares -= shares
-      en.trades.append({'shares':-shares, 'price':price, 'date':single_date})
-      newHoldings[t] = en
-    elif ( action[t] == Strategy.ACTION.HOLD or action[t] == Strategy.ACTION.KEEP):
-
-      if ( action[t] == Strategy.ACTION.HOLD and price > en.trailingPrice):
-        en.trailingPrice = price ## update the price
-        #print ("UPDATE trailing price ........... ", price)
-      #elif ( action[t] == 'KEEP'):
-      ## IF the trailingPrice is reset after each time it goes out of strong rating, the return will decrease!!
-      #  en.trailingPrice = 0 ## reset trailing stop
-      newHoldings[t] = en ### keep this holding...
-
-  ## do a second interation to add positions
-  for row in todayRows:
-    t = row.Ticker.rstrip().upper()
-
-    if (action[t] != Strategy.ACTION.BUY and action[t] != Strategy.ACTION.ADD ):
-      continue
-
-    tickerState =   currMarket[t]
-    price = tickerState.price
-    rating = tickerState.quantRating
-    if  ( posCount <= strategy.maxPostion and stat.cash > strategy.minCash + strategy.tradeSize): ## there is a room to add
-      posCount+= 1
-      tradeSize=strategy.getTradeSize(t, single_date )
-      if ( action[t] == Strategy.ACTION.ADD ):
-        tradeSize = tradeSize * 1
-      newShares = int(tradeSize/price)
-      if ( len(tickerState.trades)== 0 ):
-        tickerState.numShares = newShares
-        tickerState.entryPrice = price
-        tickerState.entryDate = single_date
-      else:
-        value = newShares * price + tickerState.numShares * tickerState.entryPrice
-        tickerState.numShares += newShares
-        avgPrice = value / tickerState.numShares
-        tickerState.entryPrice = avgPrice
-
-      tickerState.trades.append({'shares':newShares, 'price':price, 'date':single_date})
-      newHoldings[t] =  tickerState
-      stat.added  +=1
-      if ( action[t] == Strategy.ACTION.BUY ):
-        print (" ### OPEN ", newShares ," shares of" , t, " at ", price, f" rating={tickerState.quantRating}, authors={tickerState.authorsRating}, sellSide={tickerState.sellSideRating}  momentum={tickerState.momentumGrade} ")
-      else:
-        print (" ### ADD ", newShares ," shares of" , t, " at ", price)
-      stat.cash -= price * newShares
-    elif  (action[t] == Strategy.ACTION.ADD): ## there is no room to add
-      newHoldings[t] =  tickerState ## just keep it
-
-  pos = {'Date': single_date}
-  pos['Holdings'] = newHoldings
-  pos['Cash'] = stat.cash
-
-  stat.dailyPositions.append(pos)
-  holdings=newHoldings
-  stat.stockVal = 0
-  for ticker in newHoldings:
-    en = newHoldings[ticker]
-    stat.stockVal += en.numShares*en.price
-    #print (f"{ticker}  {stat.stockVal}")
-  if ( stat.minCash > stat.cash):
-    stat.minCash = stat.cash
-
-  wholeVal = stat.cash + stat.stockVal
-  if (  stat.minVal == 0 or stat.minVal >  wholeVal):
-    stat.minVal = wholeVal
-  if ( stat.maxVal <  wholeVal):
-    stat.maxVal = wholeVal
-  if (stat.maxVal > stat.minCash ):
-    drawdown = (stat.maxVal - wholeVal)/(stat.maxVal -stat.minCash)
-    realDrawdown = (stat.maxVal - wholeVal)/(stat.maxVal)
-    if ( stat.maxDrawndown < drawdown):
-      stat.maxDrawndown = drawdown
-    if ( stat.maxRealDrawndown < realDrawdown):
-      stat.maxRealDrawndown = realDrawdown
+def optimize_data_loading():
+    """Optimized data loading with pre-processing"""
+    db = alphaDb()
     
-  print (single_date,f"==== Number of postions = {len(newHoldings)}  Cash {stat.cash:.2f}, Stock {stat.stockVal:.2f} Total {stat.cash+stat.stockVal:.2f}, min cash {stat.minCash:.2f}")
-  #print (pos['Date'], " : ", pos['Holdings'])
-  fOut.writelines(f"{single_date}\t{stat.cash:.2f}\t{stat.stockVal:.2f}\t{stat.cash+stat.stockVal:.2f}\r\n")
-  if ( len(newHoldings)>stat.maxPositions):
-    stat.maxPositions =  len(newHoldings)
+    # Load all data at once with optimized query
+    sql = (f"SELECT * From DailyPrice join Ratings on DailyPrice.Ticker=Ratings.Ticker and DailyPrice.Date=Ratings.Date "
+            f" where Ratings.Date  >= '{g_startDate.strftime("%Y-%m-%d")}'  and Ratings.Date  <= '{g_endDate.strftime("%Y-%m-%d")}' "
+            f" ORDER BY Ratings.Date, Ratings.Ticker")
+    
+    res = db.queryDbSql(sql)
+    
+    # Convert to pandas DataFrame for faster processing
+    data = []
+    for row in res:
+        data.append({
+            'Date': row.Date,
+            'Ticker': row.Ticker.rstrip().upper(),
+            'Price': row.O,
+            'quantRating': row.quantRating,
+            'sellSideRating': row.sellSideRating,
+            'authorsRating': row.authorsRating,
+            'growthGrade': row.growthGrade,
+            'momentumGrade': row.momentumGrade,
+            'epsRevisionsGrade': row.epsRevisionsGrade,
+            'profitabilityGrade': row.profitabilityGrade,
+            'valueGrade': row.valueGrade
+        })
+    
+    df = pd.DataFrame(data)
+    
+    # Group by date for faster lookup
+    data_by_date = {}
+    for date_str, group in df.groupby('Date'):
+        date_key = date_str.strftime("%Y-%m-%d")
+        data_by_date[date_key] = group.to_dict('records')
+    
+    return data_by_date
 
 
+def run_optimized_backtest():
+    """Main optimized backtest function"""
+    print("Loading data...")
+    data_by_date = optimize_data_loading()
+    
+    stat = Status(g_startCash)
+    strategy = topMomentumStrategy()
+    holdings = {}
+    
+    fOut = open(r"results1_optimized.txt", "w+")
+    
+    # Pre-calculate trading dates (skip weekends)
+    trading_dates = []
+    for single_date in daterange(g_startDate, g_endDate):
+        if single_date.weekday() < 5:  # Monday = 0, Friday = 4
+            trading_dates.append(single_date)
+    
+    print(f"Processing {len(trading_dates)} trading days...")
+    
+    for single_date in trading_dates:
+        dateName = single_date.strftime("%Y-%m-%d")
+        
+        # Fast lookup using pre-grouped data
+        if dateName not in data_by_date:
+            continue
+            
+        todayRows = data_by_date[dateName]
+        if len(todayRows) == 0:
+            continue
+        
+        # Pre-build current market state
+        currMarket = {}
+        action = {}
+        
+        # Process all tickers for today in one pass
+        for row in todayRows:
+            ticker = row['Ticker']
+            
+            # Reuse existing TickerState or create new one
+            if ticker in holdings:
+                tickerState = holdings[ticker]
+            else:
+                tickerState = TickerState()
+                tickerState.ticker = ticker
+            
+            # Update ticker state efficiently
+            tickerState.price = row['Price']
+            tickerState.currentDate = single_date
+            tickerState.quantRating = row['quantRating']
+            tickerState.sellSideRating = row['sellSideRating']
+            tickerState.authorsRating = row['authorsRating']
+            tickerState.growthGrade = row['growthGrade']
+            tickerState.momentumGrade = row['momentumGrade']
+            tickerState.epsRevisionsGrade = row['epsRevisionsGrade']
+            tickerState.profitabilityGrade = row['profitabilityGrade']
+            tickerState.valueGrade = row['valueGrade']
+            
+            currMarket[ticker] = tickerState
+            
+            # Calculate strategy decisions
+            tier = strategy.qualified(tickerState)
+            action[ticker] = strategy.decision(tickerState, tier)
+        
+        # Process holdings efficiently
+        newHoldings = {}
+        posCount = len(holdings)
+        
+        # Process existing holdings
+        for ticker, holding in holdings.items():
+            if ticker not in currMarket:
+                # Keep existing position if no market data
+                action[ticker] = Strategy.ACTION.KEEP
+                newHoldings[ticker] = holding
+                continue
+                
+            tickerState = currMarket[ticker]
+            price = tickerState.price
+            rating = tickerState.quantRating
+            
+            if action[ticker] == Strategy.ACTION.SELL:
+                # Process sell action
+                shares = holding.numShares
+                entryPrice = holding.entryPrice
+                profit = (price - entryPrice) * shares
+                profitPct = (price - entryPrice) / entryPrice * 100
+                
+                print(f" --SOLD {ticker} {shares} shares at {price:.2f} with profit {profit:.2f} {profitPct:.02f}% (rating={rating:.3f}")
+                
+                delta = single_date - holding.entryDate
+                if profit >= 0:
+                    stat.wins += 1
+                    stat.winAmt += profit
+                    stat.winHoldingDays += delta.days
+                else:
+                    stat.loses += 1
+                    stat.lossAmt += profit
+                    stat.lossHoldingDays += delta.days
+                
+                stat.holdingDays += delta.days
+                stat.tickProfit[ticker] = stat.tickProfit.get(ticker, 0) + profit
+                stat.profit += profit
+                stat.sold += 1
+                posCount -= 1
+                stat.cash += shares * price
+                
+            elif action[ticker] == Strategy.ACTION.SCALEOUT:
+                # Process scale out
+                shares = int(holding.numShares / 5)
+                entryPrice = holding.entryPrice
+                profit = (price - entryPrice) * shares
+                profitPct = (price - entryPrice) / entryPrice * 100
+                
+                print(f" --SCALE OUT {ticker} {shares} shares at {price:.2f} with profit {profit:.2f} {profitPct:.02f}% (rating={rating:.3f}")
+                
+                stat.profit += profit
+                stat.cash += shares * price
+                holding.numShares -= shares
+                holding.trades.append({'shares': -shares, 'price': price, 'date': single_date})
+                newHoldings[ticker] = holding
+                
+            elif action[ticker] in [Strategy.ACTION.HOLD, Strategy.ACTION.KEEP]:
+                # Update trailing price if needed
+                if action[ticker] == Strategy.ACTION.HOLD and price > holding.trailingPrice:
+                    holding.trailingPrice = price
+                newHoldings[ticker] = holding
+        
+        # Process new positions
+        for row in todayRows:
+            ticker = row['Ticker']
+            
+            if action[ticker] not in [Strategy.ACTION.BUY, Strategy.ACTION.ADD]:
+                continue
+                
+            tickerState = currMarket[ticker]
+            price = tickerState.price
+            rating = tickerState.quantRating
+            
+            if posCount <= strategy.maxPostion and stat.cash > strategy.minCash + strategy.tradeSize:
+                posCount += 1
+                tradeSize = strategy.getTradeSize(ticker, single_date)
+                if action[ticker] == Strategy.ACTION.ADD:
+                    tradeSize = tradeSize * 1
+                    
+                newShares = int(tradeSize / price)
+                
+                if len(tickerState.trades) == 0:
+                    tickerState.numShares = newShares
+                    tickerState.entryPrice = price
+                    tickerState.entryDate = single_date
+                else:
+                    value = newShares * price + tickerState.numShares * tickerState.entryPrice
+                    tickerState.numShares += newShares
+                    tickerState.entryPrice = value / tickerState.numShares
+                
+                tickerState.trades.append({'shares': newShares, 'price': price, 'date': single_date})
+                newHoldings[ticker] = tickerState
+                stat.added += 1
+                
+                if action[ticker] == Strategy.ACTION.BUY:
+                    print(f" ### OPEN {newShares} shares of {ticker} at {price} rating={tickerState.quantRating}, authors={tickerState.authorsRating}, sellSide={tickerState.sellSideRating} momentum={tickerState.momentumGrade}")
+                else:
+                    print(f" ### ADD {newShares} shares of {ticker} at {price}")
+                    
+                stat.cash -= price * newShares
+            elif action[ticker] == Strategy.ACTION.ADD:
+                newHoldings[ticker] = tickerState
+        
+        # Update portfolio statistics
+        pos = {'Date': single_date, 'Holdings': newHoldings, 'Cash': stat.cash}
+        stat.dailyPositions.append(pos)
+        holdings = newHoldings
+        
+        # Calculate current portfolio value
+        stat.stockVal = sum(holding.numShares * holding.price for holding in newHoldings.values())
+        
+        if stat.minCash > stat.cash:
+            stat.minCash = stat.cash
+            
+        wholeVal = stat.cash + stat.stockVal
+        if stat.minVal == 0 or stat.minVal > wholeVal:
+            stat.minVal = wholeVal
+        if stat.maxVal < wholeVal:
+            stat.maxVal = wholeVal
+            
+        if stat.maxVal > stat.minCash:
+            drawdown = (stat.maxVal - wholeVal) / (stat.maxVal - stat.minCash)
+            realDrawdown = (stat.maxVal - wholeVal) / stat.maxVal
+            if stat.maxDrawndown < drawdown:
+                stat.maxDrawndown = drawdown
+            if stat.maxRealDrawndown < realDrawdown:
+                stat.maxRealDrawndown = realDrawdown
+        
+        print(f"{single_date} ==== Number of positions = {len(newHoldings)} Cash {stat.cash:.2f}, Stock {stat.stockVal:.2f} Total {stat.cash+stat.stockVal:.2f}, min cash {stat.minCash:.2f}")
+        fOut.writelines(f"{single_date}\t{stat.cash:.2f}\t{stat.stockVal:.2f}\t{stat.cash+stat.stockVal:.2f}\r\n")
+        
+        if len(newHoldings) > stat.maxPositions:
+            stat.maxPositions = len(newHoldings)
+    
+    fOut.close()
+    
+    # Print final results
+    print_results(stat)
+    
+    return stat
 
-# Define a custom function to serialize datetime objects 
-def serialize_datetime(obj): 
-    if isinstance(obj, (datetime, date)): 
-        return obj.isoformat() 
-    elif isinstance(obj, TickerState):
-      return (f'{obj.entryDate}, {obj.entryPrice}, {obj.price}, {100*(obj.price-obj.entryPrice)/obj.entryPrice:.2f}%')
- 
-    raise TypeError("Type %s not serializable" % type(obj))
-#exit()
-#for pos in positions:
-pos = stat.dailyPositions[-1]
-#print (pos)
-pos = stat.dailyPositions[-1]
-print (json.dumps(pos, indent=2, default=serialize_datetime))
-fOut.close()
-print ("\nMaximum positions ==", stat.maxPositions, f" return Rate= {(stat.cash+stat.stockVal-g_startCash)*100/(g_startCash-stat.minCash):.2f}%",
-       f"real return={(stat.cash+stat.stockVal-g_startCash)/g_startCash*100:.2f}% ")
 
-print (f"Total Trades = {stat.added} Total Closed Trades = {stat.sold}")
-print (f"Max value ={stat.maxVal:.2f}, Min value={stat.minVal:.2f}, max drawdown = {stat.maxDrawndown*100:.2f}%",
-        f"real max drawdown = {stat.maxRealDrawndown*100:.2f}%")
-if ( stat.wins != 0 and stat.loses != 0):
-  print (f"Total Wins = {stat.wins} , avg=${stat.winAmt/stat.wins:.2f} Loses = {stat.loses}, avg=${stat.lossAmt/stat.loses:.2f}")
-  print (f"Avg Holding Days = {stat.holdingDays/stat.sold:.2f}, Win holds day {stat.winHoldingDays/stat.wins:.2f}, Loss holds days {stat.lossHoldingDays/stat.loses:.2f}")
-
-#for en in  pos['Holdings']:
-#  print (" ", en, pos['Holdings'][en])
-minTickProfit = 9999999
-maxTickProfit = 0
-bestTick = worstTick = None
-
-for t in stat.tickProfit :
-  if ( minTickProfit > stat.tickProfit[t]):
-    minTickProfit = stat.tickProfit[t]
-    worstTick = t
-  if ( maxTickProfit < stat.tickProfit[t]):
-    maxTickProfit = stat.tickProfit[t]
-    bestTick = t
+def print_results(stat):
+    """Print final backtest results"""
+    print(f"\nMaximum positions == {stat.maxPositions}")
+    print(f"Return Rate = {(stat.cash+stat.stockVal-g_startCash)*100/(g_startCash-stat.minCash):.2f}%")
+    print(f"Real return = {(stat.cash+stat.stockVal-g_startCash)/g_startCash*100:.2f}%")
+    print(f"Total Trades = {stat.added} Total Closed Trades = {stat.sold}")
+    print(f"Max value = {stat.maxVal:.2f}, Min value = {stat.minVal:.2f}")
+    print(f"Max drawdown = {stat.maxDrawndown*100:.2f}%")
+    print(f"Real max drawdown = {stat.maxRealDrawndown*100:.2f}%")
+    
+    if stat.wins != 0 and stat.loses != 0:
+        print(f"Total Wins = {stat.wins}, avg=${stat.winAmt/stat.wins:.2f}")
+        print(f"Loses = {stat.loses}, avg=${stat.lossAmt/stat.loses:.2f}")
+        print(f"Avg Holding Days = {stat.holdingDays/stat.sold:.2f}")
+        print(f"Win holds day {stat.winHoldingDays/stat.wins:.2f}")
+        print(f"Loss holds days {stat.lossHoldingDays/stat.loses:.2f}")
+    
+    # Find best and worst tickers
+    if stat.tickProfit:
+        best_tick = max(stat.tickProfit.items(), key=lambda x: x[1])
+        worst_tick = min(stat.tickProfit.items(), key=lambda x: x[1])
+        
+        if best_tick[1] > 0:
+            print(f"{len(stat.tickProfit)} Tickers were traded. Best tick {best_tick[0]} made ${best_tick[1]:.2f}.")
+        if worst_tick[1] < 0:
+            print(f"Worst tick {worst_tick[0]} lost ${-worst_tick[1]:.2f}")
 
 
-if ( bestTick != None and maxTickProfit> 0):
-  print (f"{len(stat.tickProfit)} Tickers were traded. Best tick {bestTick} made ${maxTickProfit:.2f}.")
-if ( worstTick != None and minTickProfit< 0):
-  print (f"Worst tick {worstTick} lost ${-minTickProfit:.2f}")
-
-print (shortMsg)
-print (stopMsg)
-
-
+if __name__ == "__main__":
+    # Run the optimized backtest
+    run_optimized_backtest() 
