@@ -18,7 +18,7 @@ def get_last_trading_day(today):
 
 newDate = datetime.now()#  None # date(2024,11,22)
 oldDate = get_last_trading_day(newDate )
-#oldDate =  date(2025,7,14)
+oldDate =  date(2025,7,29)
 quantRatingHi = 4.95
 quantRatingLo = 4.0
 sellerRatingHi = 4.0
@@ -110,7 +110,7 @@ def fetchAlphaStockRatingsHistAll(day=None, doMakeUp=False):
   cnt = 0
   totPages = 1
   print ("Search Rating information from SeekingAlpha for ", len(tickers), " tickers...")
-  fromDate =  datetime.now() + timedelta(days=-101)
+  fromDate =  datetime.now() + timedelta(days=-110)
   fromDateStr = fromDate.strftime("%Y-%m-%d")
 
   for ticker in tickers:
